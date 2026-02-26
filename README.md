@@ -1,7 +1,7 @@
 # 🎓 An Intelligent Chatbot for Assisting Faculty Promotion Processes
 
 ## 📌 Overview
-This project is a web-based academic chatbot designed to support faculty promotion–related inquiries at the **:contentReference[oaicite:0]{index=0}** .  
+This project is a web-based academic chatbot designed to support faculty promotion–related inquiries at the University of Sharjah.  
 The system uses **Retrieval-Augmented Generation (RAG)** to provide accurate, policy-grounded responses based on official university documentation, specifically the Faculty Handbook.
 
 ## 🚀 Key Features
