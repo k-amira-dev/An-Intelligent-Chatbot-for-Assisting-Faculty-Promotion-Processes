@@ -66,29 +66,58 @@ class CustomHybridRetriever(BaseRetriever):
         unique_nodes_dict = {n.node.get_content(): n for n in all_nodes}
         
         return list(unique_nodes_dict.values())
+#without rrf
+#def get_query_engine(index):
+ #   # Setup base retrievers
+  #  vector_retriever = index.as_retriever(similarity_top_k=5)
+   # bm25_retriever = BM25Retriever.from_defaults(
+    #    docstore=index.docstore, 
+     #   similarity_top_k=5
+    #)
 
-def get_query_engine(index):
-    # Setup base retrievers
-    vector_retriever = index.as_retriever(similarity_top_k=5)
-    bm25_retriever = BM25Retriever.from_defaults(
-        docstore=index.docstore, 
-        similarity_top_k=5
-    )
-
-    hybrid_retriever = CustomHybridRetriever(vector_retriever, bm25_retriever)
+#    hybrid_retriever = CustomHybridRetriever(vector_retriever, bm25_retriever)
 # 4. NEW: Setup the LLM Reranker
     # choice_batch_size: How many chunks it looks at once
     # top_n: How many total chunks it passes to the final answer
-    reranker = LLMRerank(choice_batch_size=5, top_n=3)
+ #   reranker = LLMRerank(choice_batch_size=5, top_n=3)
 
     # 5. Build the engine and plug in the reranker
+ #   return RetrieverQueryEngine.from_args(
+  #      retriever=hybrid_retriever,
+   #     node_postprocessors=[reranker],  #the reranker is plugged in here!!
+    #    text_qa_template=uos_qa_template
+    #)
+    # Returned the query engine using qa uos template
+
+#reranker+hybridsearch+rrf(multi query expansion model)
+def get_query_engine(index):
+    # 1. Setup base retrievers (Semantic and Keyword)
+    vector_retriever = index.as_retriever(similarity_top_k=10)
+    bm25_retriever = BM25Retriever.from_defaults(
+        docstore=index.docstore, 
+        similarity_top_k=10
+    )
+
+    # 2. Add RRF Fusion
+    # We set num_queries=1 so it DOES NOT rewrite your question
+    # It just takes the Vector and BM25 results and performs RRF math
+    fusion_retriever = QueryFusionRetriever(
+        [vector_retriever, bm25_retriever],
+        similarity_top_k=10,
+        num_queries=1,  # Set to 1 to skip "Question Expansion/Enhancer"
+        mode="reciprocal_rank_fusion",
+        use_async=True
+    )
+
+    # 3. Setup the LLM Reranker (Kept exactly as you requested)
+    reranker = LLMRerank(choice_batch_size=5, top_n=3)
+
+    # 4. Build the engine
     return RetrieverQueryEngine.from_args(
-        retriever=hybrid_retriever,
-        node_postprocessors=[reranker],  #the reranker is plugged in here!!
+        retriever=fusion_retriever,
+        node_postprocessors=[reranker],
         text_qa_template=uos_qa_template
     )
-    # Returned the query engine using qa uos template
-   
 def evaluate_response(query, response_text, context_nodes):
     # Extract text from the source nodes retrieved by the hybrid search
     context_text = "\n".join([n.get_content() for n in context_nodes])
