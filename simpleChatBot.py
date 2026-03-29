@@ -17,6 +17,7 @@ uos_qa_template = PromptTemplate(
     "Context:\n{context_str}\n"
     "Using ONLY the context, answer: {query_str}\n"
     "If the answer is not in the context, say 'Not found.'\n"
+    "Use a formal, helpful tone.\n"
     "Answer: "
 )
 
@@ -68,7 +69,6 @@ def get_query_engine(index):
         similarity_top_k=5
     )
 
-    # Initialize your custom hybrid logic
     hybrid_retriever = CustomHybridRetriever(vector_retriever, bm25_retriever)
 
     # Return the query engine using your template
@@ -76,8 +76,39 @@ def get_query_engine(index):
         retriever=hybrid_retriever,
         text_qa_template=uos_qa_template
     )
-
+    
 def evaluate_response(query, response_text, context_nodes):
+    # Extract text from the source nodes retrieved by the hybrid search
     context_text = "\n".join([n.get_content() for n in context_nodes])
-    judge_prompt = f"Verify answer against context:\n{context_text}\nQuery: {query}\nAnswer: {response_text}"
+    
+    # Your updated detailed Auditor Prompt
+    judge_prompt = f"""
+    ROLE: Senior Academic Auditor
+    TASK: Verify the accuracy of a generated answer against the provided Source Context.
+    
+    SOURCE CONTEXT: 
+    {context_text}
+    
+    USER QUERY: {query}
+    GENERATED ANSWER: {response_text}
+    
+    AUDIT REQUIREMENTS:
+    1. FACTUALITY: Does the answer contain ANY information not present in the Source Context?
+    2. CITATION: Does the answer correctly cite Article numbers if they exist?
+    3. HALLUCINATION: Did the AI make up any dates, numbers, or rules that don't exist in the documents? 
+    4. KEYWORDS: Does the generated answer contain keywords that exist in the articles?
+    
+    FINAL VERDICT:
+    - Confidence Score: (1 to 5)
+    - Hallucination Detected: (Yes/No)
+    - Reasoning: (Briefly explain why).
+    """
+    
+    # Use the global LLM (Groq) to perform the audit
     return str(Settings.llm.complete(judge_prompt))
+
+#shorter version if you want to use it amira
+#def evaluate_response(query, response_text, context_nodes):
+ #   context_text = "\n".join([n.get_content() for n in context_nodes])
+  #  judge_prompt = f"Verify answer against context:\n{context_text}\nQuery: {query}\nAnswer: {response_text}"
+   # return str(Settings.llm.complete(judge_prompt))
