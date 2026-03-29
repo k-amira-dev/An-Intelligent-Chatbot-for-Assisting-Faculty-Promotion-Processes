@@ -11,8 +11,13 @@ from llama_index.core.retrievers import BaseRetriever
 from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.core.postprocessor import LLMRerank
 from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.core.retrievers import QueryFusionRetriever
 
-# --- PROMPTS ---
+
+
+
+
+#answering prompt
 uos_qa_template = PromptTemplate(
     "You are an expert Faculty Affairs Consultant at the University of Sharjah.\n"
     "Context:\n{context_str}\n"
