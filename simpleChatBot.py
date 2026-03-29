@@ -9,6 +9,7 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.faiss import FaissVectorStore
 from llama_index.core.retrievers import BaseRetriever
 from llama_index.retrievers.bm25 import BM25Retriever
+from llama_index.core.postprocessor import LLMRerank
 from llama_index.core.query_engine import RetrieverQueryEngine
 
 # --- PROMPTS ---
@@ -70,13 +71,19 @@ def get_query_engine(index):
     )
 
     hybrid_retriever = CustomHybridRetriever(vector_retriever, bm25_retriever)
+# 4. NEW: Setup the LLM Reranker
+    # choice_batch_size: How many chunks it looks at once
+    # top_n: How many total chunks it passes to the final answer
+    reranker = LLMRerank(choice_batch_size=5, top_n=3)
 
-    # Return the query engine using your template
+    # 5. Build the engine and plug in the reranker
     return RetrieverQueryEngine.from_args(
         retriever=hybrid_retriever,
+        node_postprocessors=[reranker],  #the reranker is plugged in here!!
         text_qa_template=uos_qa_template
     )
-    
+    # Returned the query engine using qa uos template
+   
 def evaluate_response(query, response_text, context_nodes):
     # Extract text from the source nodes retrieved by the hybrid search
     context_text = "\n".join([n.get_content() for n in context_nodes])
