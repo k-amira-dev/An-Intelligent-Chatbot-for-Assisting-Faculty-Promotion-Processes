@@ -1,155 +1,252 @@
-import streamlit as st
-import os
-import faiss
-from llama_parse import LlamaParse
-from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings, PromptTemplate, StorageContext
-from llama_index.core.node_parser import SentenceSplitter
-from llama_index.llms.groq import Groq
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.vector_stores.faiss import FaissVectorStore
-from llama_index.core.retrievers import BaseRetriever
-from llama_index.retrievers.bm25 import BM25Retriever
-from llama_index.core.postprocessor import LLMRerank
-from llama_index.core.query_engine import RetrieverQueryEngine
-from llama_index.core.retrievers import QueryFusionRetriever
+# import libraries
 
+import os  #to read files
+import pdfplumber   #to extract text from PDF files
+import faiss  # Facebook AI Similarity Search to store and search vector embeddings efficiently
+import tiktoken # to convert text into tokens
+from sentence_transformers import SentenceTransformer # to convert text into vector embeddings
+from groq import Groq # cloud service to access LLM model
+from rank_bm25 import BM25Okapi # Keyword retrieval
 
+# create a Groq client using the API key stored as an environment variable
+# This allows the program to communicate with the LLM model hosted by Groq
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
+#function to extract text from pdf
+def extract_text_from_pdfs(folder_path):
 
+    # List that will store each document with its source name and extracted text
+    documents = []
 
-#answering prompt
-uos_qa_template = PromptTemplate(
-    "You are an expert Faculty Affairs Consultant at the University of Sharjah.\n"
-    "Context:\n{context_str}\n"
-    "Using ONLY the context, answer: {query_str}\n"
-    "If the answer is not in the context, say 'Not found.'\n"
-    "Use a formal, helpful tone.\n"
-    "Answer: "
-)
+    # Loop through all files inside the folder
+    for filename in os.listdir(folder_path):
 
-# --- SETTINGS ---
-def set_llm():
-    Settings.llm = Groq(model="llama-3.3-70b-versatile", api_key=st.secrets["GROQ_KEY"])
-    Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
-    Settings.node_parser = SentenceSplitter(chunk_size=400, chunk_overlap=100)
+        # Process only PDF files
+        if filename.endswith(".pdf"):
 
-@st.cache_resource 
-def load_data_from_github():
-    if not os.path.exists("data"): return None
-    parser = LlamaParse(api_key=st.secrets["LLAMA_CLOUD_API_KEY"], result_type="markdown")
-    reader = SimpleDirectoryReader("data", file_extractor={".pdf": parser})
-    docs = reader.load_data()
+            # Build the full file path
+            filepath = os.path.join(folder_path, filename)
+            print(f"Reading {filename}...")
 
-    # FAISS Setup (Matches your IndexFlatIP logic)
-    d = 384 
-    faiss_index = faiss.IndexFlatIP(d)
-    vector_store = FaissVectorStore(faiss_index=faiss_index)
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-    
-    return VectorStoreIndex.from_documents(docs, storage_context=storage_context)
+            # Open the PDF file using pdfplumber
+            with pdfplumber.open(filepath) as pdf:
+                full_text = ""
 
-# --- HYBRID RETRIEVER (REPLICATING YOUR LOGIC) ---
-class CustomHybridRetriever(BaseRetriever):
-    def __init__(self, vector_retriever, bm25_retriever):
-        self._vector_retriever = vector_retriever
-        self._bm25_retriever = bm25_retriever
-        super().__init__()
+                # Loop through every page of the PDF
+                for page in pdf.pages:
+                    # Extract text from the page
+                    text = page.extract_text()
+                    # Only add text if extraction succeeded
+                    if text:
+                        full_text += text + "\n"
 
-    def _retrieve(self, query_bundle):
-        # 1. Semantic Search (FAISS)
-        vector_nodes = self._vector_retriever.retrieve(query_bundle)
-        # 2. Keyword Search (BM25)
-        bm25_nodes = self._bm25_retriever.retrieve(query_bundle)
+            # Store the document text and its source filename
+            documents.append({
+                "source": filename,
+                "text": full_text
+            })
+    # Return the list of extracted documents
+    return documents
 
-        # 3. Combine & Deduplicate (Using text content as the key)
-        all_nodes = vector_nodes + bm25_nodes
-        unique_nodes_dict = {n.node.get_content(): n for n in all_nodes}
-        
-        return list(unique_nodes_dict.values())
-#without rrf
-#def get_query_engine(index):
- #   # Setup base retrievers
-  #  vector_retriever = index.as_retriever(similarity_top_k=5)
-   # bm25_retriever = BM25Retriever.from_defaults(
-    #    docstore=index.docstore, 
-     #   similarity_top_k=5
-    #)
+#function to clean text
+def clean_text(text):
 
-#    hybrid_retriever = CustomHybridRetriever(vector_retriever, bm25_retriever)
-# 4. NEW: Setup the LLM Reranker
-    # choice_batch_size: How many chunks it looks at once
-    # top_n: How many total chunks it passes to the final answer
- #   reranker = LLMRerank(choice_batch_size=5, top_n=3)
+    # Replace newline characters with spaces
+    text = text.replace("\n", " ")
+    # Remove extra spaces by splitting and joining
+    text = " ".join(text.split())
 
-    # 5. Build the engine and plug in the reranker
- #   return RetrieverQueryEngine.from_args(
-  #      retriever=hybrid_retriever,
-   #     node_postprocessors=[reranker],  #the reranker is plugged in here!!
-    #    text_qa_template=uos_qa_template
-    #)
-    # Returned the query engine using qa uos template
+    return text
 
-#reranker+hybridsearch+rrf(multi query expansion model)
-def get_query_engine(index):
-    # 1. Setup base retrievers (Semantic and Keyword)
-    vector_retriever = index.as_retriever(similarity_top_k=10)
-    bm25_retriever = BM25Retriever.from_defaults(
-        docstore=index.docstore, 
-        similarity_top_k=10
+#function to chunk text into smaller parts
+def chunk_text(text, source, chunk_size=400, overlap=100):
+
+    # Load tokenizer used by many LLM models
+    enc = tiktoken.get_encoding("cl100k_base")
+    # Convert text into tokens
+    tokens = enc.encode(text)
+
+    chunks = []
+    start = 0
+
+    # Loop until the entire text is chunked
+    while start < len(tokens):
+        # Define the end of the chunk
+        end = start + chunk_size
+        # Extract token segment
+        chunk_tokens = tokens[start:end]
+        # Convert tokens back into readable text
+        chunk_string = enc.decode(chunk_tokens)
+        # Store the chunk along with its source file
+        chunks.append({
+            "text": chunk_string,
+            "source": source
+        })
+
+        # Move start position forward but keep overlap
+        start += chunk_size - overlap
+
+    return chunks
+
+#function to uild FAISS vector index
+def build_index(chunks, model):
+
+    # Extract only the text content of chunks
+    texts = [chunk["text"] for chunk in chunks]
+    # Convert each chunk into vector embeddings
+    embeddings = model.encode(texts).astype("float32")
+    # Normalize vectors so cosine similarity can be used
+    faiss.normalize_L2(embeddings)
+    # Create FAISS index using inner product (cosine similarity)
+    index = faiss.IndexFlatIP(embeddings.shape[1])
+    # Add embeddings to the index
+    index.add(embeddings)
+
+    return index
+
+#function to retrieve most relevant chunks: Hybrid Retrieval (Semantic + Keyword)
+def retrieve(query, chunks, index, model, bm25, k=10):
+
+    # Instruction improves embedding quality for search
+    query_instruction = "Represent this sentence for searching relevant passages: "
+    # Convert query into vector embedding
+    q_vec = model.encode([query_instruction + query]).astype("float32")
+    # Normalize query vector
+    faiss.normalize_L2(q_vec)
+    # Search FAISS index for top k most similar vectors
+    D, I = index.search(q_vec, k)
+    # Retrieve semantic search results
+    semantic_chunks = [chunks[i] for i in I[0]]
+
+    # Tokenize query for BM25 keyword search
+    tokenized_query = query.lower().split()
+    # Compute BM25 relevance scores
+    bm25_scores = bm25.get_scores(tokenized_query)
+    # Get indices of top k keyword matches
+    top_keyword_indices = sorted(
+        range(len(bm25_scores)),
+        key=lambda i: bm25_scores[i],
+        reverse=True
+    )[:k]
+
+    # Retrieve keyword search results
+    keyword_chunks = [chunks[i] for i in top_keyword_indices]
+
+    # Merge semantic and keyword results
+    combined = semantic_chunks + keyword_chunks
+
+    # Remove duplicates using dictionary
+    unique = {chunk["text"]: chunk for chunk in combined}
+
+    return list(unique.values())
+
+# function to generate answers using LLM
+def generate_answer(query, retrieved_chunks):
+
+    context = ""
+    sources = set()
+
+    # Combine retrieved chunks into a single context
+    for chunk in retrieved_chunks:
+        context += chunk["text"] + "\n\n"
+        # Track document sources
+        sources.add(chunk["source"])
+
+    # Send prompt to the LLM
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+
+        messages=[
+
+            # System instruction that controls model behavior
+            {
+                "role": "system",
+                "content": "You are an assistant helping university faculty understand promotion requirements."
+                           "Use ONLY the provided context."
+                           "If the question asks for guidance or a plan, synthesize the answer using the requirements in the context."
+                           "If the answer cannot be found in the context, say 'Not found.'"
+            },
+
+            # User prompt containing context + question
+            {
+                "role": "user",
+                "content": f"""
+                            Use the context below to answer the question.
+
+                            Context:
+                            {context}
+
+                            Question:
+                            {query}
+
+                            Answer:
+                            """
+            }
+
+        ],
+
+        # Maximum number of tokens allowed in the answer
+        max_tokens=500,
+        # Temperature = 0 ensures deterministic responses
+        temperature=0
     )
 
-    # 2. Add RRF Fusion
-    # We set num_queries=1 so it DOES NOT rewrite your question
-    # It just takes the Vector and BM25 results and performs RRF math
-    fusion_retriever = QueryFusionRetriever(
-        [vector_retriever, bm25_retriever],
-        similarity_top_k=10,
-        num_queries=1,  # Set to 1 to skip "Question Expansion/Enhancer"
-        mode="reciprocal_rank_fusion",
-        use_async=True
-    )
+    # Extract model answer
+    answer = response.choices[0].message.content
 
-    # 3. Setup the LLM Reranker (Kept exactly as you requested)
-    reranker = LLMRerank(choice_batch_size=5, top_n=3)
+    return answer, sources
 
-    # 4. Build the engine
-    return RetrieverQueryEngine.from_args(
-        retriever=fusion_retriever,
-        node_postprocessors=[reranker],
-        text_qa_template=uos_qa_template
-    )
-def evaluate_response(query, response_text, context_nodes):
-    # Extract text from the source nodes retrieved by the hybrid search
-    context_text = "\n".join([n.get_content() for n in context_nodes])
-    
-    # Your updated detailed Auditor Prompt
-    judge_prompt = f"""
-    ROLE: Senior Academic Auditor
-    TASK: Verify the accuracy of a generated answer against the provided Source Context.
-    
-    SOURCE CONTEXT: 
-    {context_text}
-    
-    USER QUERY: {query}
-    GENERATED ANSWER: {response_text}
-    
-    AUDIT REQUIREMENTS:
-    1. FACTUALITY: Does the answer contain ANY information not present in the Source Context?
-    2. CITATION: Does the answer correctly cite Article numbers if they exist?
-    3. HALLUCINATION: Did the AI make up any dates, numbers, or rules that don't exist in the documents? 
-    4. KEYWORDS: Does the generated answer contain keywords that exist in the articles?
-    
-    FINAL VERDICT:
-    - Confidence Score: (1 to 5)
-    - Hallucination Detected: (Yes/No)
-    - Reasoning: (Briefly explain why).
-    """
-    
-    # Use the global LLM (Groq) to perform the audit
-    return str(Settings.llm.complete(judge_prompt))
+# main function
+def main():
 
-#shorter version if you want to use it amira
-#def evaluate_response(query, response_text, context_nodes):
- #   context_text = "\n".join([n.get_content() for n in context_nodes])
-  #  judge_prompt = f"Verify answer against context:\n{context_text}\nQuery: {query}\nAnswer: {response_text}"
-   # return str(Settings.llm.complete(judge_prompt))
+    # Folder containing promotion regulation documents
+    folder_path = "C:/Users/amour/OneDrive - University of Sharjah/amira 3rd year/spring/junior project/promotion documents"
+
+    # Step 1: Extract text from all PDFs
+    documents = extract_text_from_pdfs(folder_path)
+
+    # Step 2: Chunk documents
+    all_chunks = []
+
+    for doc in documents:
+
+        # Clean document text
+        cleaned = clean_text(doc["text"])
+        # Create chunks
+        doc_chunks = chunk_text(cleaned, doc["source"])
+        # Add chunks to global list
+        all_chunks.extend(doc_chunks)
+
+    # Prepare data for BM25 keyword search
+    tokenized_chunks = [chunk["text"].lower().split() for chunk in all_chunks]
+    bm25 = BM25Okapi(tokenized_chunks)
+
+    # Step 3: Load embedding model
+    model = SentenceTransformer("BAAI/bge-small-en")
+
+    # Step 4: Build FAISS index
+    index = build_index(all_chunks, model)
+
+    # Step 5: Interactive chatbot loop
+    while True:
+
+        print("You: ", end="", flush=True)
+
+        # Read user question
+        query = input()
+
+        # Retrieve relevant document chunks
+        retrieved = retrieve(query, all_chunks, index, model, bm25)
+
+        # Generate answer using LLM
+        answer, sources = generate_answer(query, retrieved)
+
+        # Print answer and sources
+        print("\nBot:", answer)
+        print("Sources:", ", ".join(sources))
+        print("-" * 50)
+
+
+# Run program
+if __name__ == "__main__":
+    main()
