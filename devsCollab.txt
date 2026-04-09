@@ -1,0 +1,5 @@
+#This is the   --- DISPLAY SOURCES --- part in my streamlit based code, in case you want to implement it
+        with st.expander("View Source Documents"):
+            for i, source in enumerate(response.source_nodes):
+                st.caption(f"**Source Chunk {i+1}**")
+                st.info(source.node.get_content())
